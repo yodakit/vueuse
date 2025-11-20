@@ -4,7 +4,7 @@ import { nextTick, ref } from 'vue';
 import { withSetup } from '~/tests/utils';
 import { useValidate, type UseValidateRules } from '.';
 
-const createDataAndRules = (failValidators = true) => {
+const createDataAndRules = (isValid = false) => {
   const data = ref({
     foo: 'foo',
     bar: {
@@ -15,13 +15,13 @@ const createDataAndRules = (failValidators = true) => {
     foo: {
       invalid: {
         message: 'foo invalid',
-        test: () => failValidators,
+        test: () => isValid,
       },
     },
     'bar.baz': {
       invalid: {
         message: 'baz invalid',
-        test: () => failValidators,
+        test: () => isValid,
       },
     },
   } satisfies UseValidateRules<typeof data.value>;
@@ -54,7 +54,7 @@ const test = baseTest.extend<{
 
 test('Нет ошибок, если заданные правила выполнены', () => {
   // Arrange
-  const { data, rules } = createDataAndRules(false);
+  const { data, rules } = createDataAndRules(true);
 
   // Act
   const validator = withSetup(() => useValidate(data, rules))[0];
@@ -140,24 +140,24 @@ test('Допускает конфигурацию правила без указ
 
   // Assert
   expect(errors.value.foo?.rule).toBe('invalid');
-  // @ts-expect-error Обращаемся к заведомо несуществующему полю
   expect(errors.value.foo?.message).toBeUndefined();
 });
 
 test('Валидирует отдельное поле', ({ validator }) => {
   // Act
-  validator.validateField('foo');
+  const isValid = validator.validateField('foo');
   const { errors, hasError } = validator;
 
   // Assert
   expect(errors.value.foo?.rule).toBe('invalid');
   expect(errors.value.foo?.message).toBe('foo invalid');
   expect(hasError.value).toBeTruthy();
+  expect(isValid).toBeFalsy();
 });
 
 test('Валидирует все поля', ({ validator }) => {
   // Act
-  validator.validateAllFields();
+  const isValid = validator.validateAllFields();
   const { errors, hasError } = validator;
 
   // Assert
@@ -166,6 +166,7 @@ test('Валидирует все поля', ({ validator }) => {
   expect(errors.value['bar.baz']?.rule).toBe('invalid');
   expect(errors.value['bar.baz']?.message).toBe('baz invalid');
   expect(hasError.value).toBeTruthy();
+  expect(isValid).toBeFalsy();
 });
 
 test('Очищает ошибку отдельного поля', ({ validator }) => {
@@ -180,7 +181,7 @@ test('Очищает ошибку отдельного поля', ({ validator }
   validator.clearError('foo');
 
   // Assert
-  expect(validator.errors.value.foo).toBeNull();
+  expect(validator.errors.value.foo).toBeUndefined();
   expect(hasError.value).toBeFalsy();
 });
 
@@ -198,8 +199,8 @@ test('Очищает ошибки всех полей', ({ validator }) => {
   validator.clearAllErrors();
 
   // Assert
-  expect(validator.errors.value.foo).toBeNull();
-  expect(validator.errors.value['bar.baz']).toBeNull();
+  expect(validator.errors.value.foo).toBeUndefined();
+  expect(validator.errors.value['bar.baz']).toBeUndefined();
   expect(hasError.value).toBeFalsy();
 });
 
