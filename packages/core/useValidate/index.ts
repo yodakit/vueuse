@@ -1,19 +1,18 @@
-/* eslint-disable jsdoc/require-param-type */
-import { findKey, get, isFunction, some } from 'lodash';
-import { computed, ref, toValue, watch, type ComputedRef, type MaybeRefOrGetter } from 'vue-demi';
+import type { Get, NonEmptyObject, Paths, RequireAtLeastOne } from 'type-fest'
+import type { ComputedRef, MaybeRefOrGetter } from 'vue'
 
-import type { UnknownRecord } from '@/shared/types';
-import { useWatchStopHandlers } from './utils';
+import { findKey, get } from 'lodash'
+import { computed, ref as deepRef, toValue, watch } from 'vue'
 
-import type { Get, NonEmptyObject, Paths, RequireAtLeastOne } from 'type-fest';
+import { useWatchStopHandlers } from './lib/useWatchStopHandlers'
 
-type Data = UnknownRecord<string>;
+type Data = Record<string, any>
 
 type StringPaths<ObjectData extends Data> = Paths<ObjectData> extends string
   ? Paths<ObjectData>
-  : never;
+  : never
 
-type Message<Value> = ((value: Value) => string) | MaybeRefOrGetter<string>;
+type Message<Value> = ((value: Value) => string) | MaybeRefOrGetter<string>
 
 type UseValidateRule<Value> = RequireAtLeastOne<{
   message?: Message<Value>
@@ -24,23 +23,23 @@ type UseValidateRule<Value> = RequireAtLeastOne<{
    * @returns `true` if the value is valid, `false` otherwise
    */
   test?: (value: Value) => boolean
-}>;
+}>
 
 type UseValidateRulesByPath<
   ValidationData extends Data,
   Path extends StringPaths<ValidationData>,
-> = Record<string, UseValidateRule<Get<ValidationData, Path>>>;
+> = Record<string, UseValidateRule<Get<ValidationData, Path>>>
 
 type UseValidateRules<ValidationData extends Data> = NonEmptyObject<{
   [Path in StringPaths<ValidationData>]?: UseValidateRulesByPath<ValidationData, Path>
-}>;
+}>
 
 type ValidationPaths<
   ValidationData extends Data,
   ValidationRules extends UseValidateRules<ValidationData>,
 > = keyof ValidationRules extends StringPaths<ValidationData>
   ? keyof ValidationRules
-  : never;
+  : never
 
 type UseValidateErrors<
   ValidationData extends Data,
@@ -51,7 +50,7 @@ type UseValidateErrors<
       ? { rule: RuleName, message: string }
       : { rule: RuleName, message?: undefined }
   }[keyof ValidationRules[Path]]
-};
+}
 
 interface UseValidateOptions {
   /**
@@ -118,57 +117,53 @@ interface UseValidateReturn<ValidationData extends Data, ValidationRules extends
  * @param rules - The validation rules mapped by field path. Use `satisfies` to ensure the correct type.
  * @param options
  */
-const useValidate = <
+function useValidate<
   ValidationData extends Data,
   ValidationRules extends UseValidateRules<ValidationData>,
->(
-  data: MaybeRefOrGetter<ValidationData>,
-  rules: ValidationRules,
-  options?: UseValidateOptions,
-): UseValidateReturn<ValidationData, ValidationRules> => {
-  const errors = ref({} as UseValidateErrors<ValidationData, ValidationRules>);
+>(data: MaybeRefOrGetter<ValidationData>, rules: ValidationRules, options?: UseValidateOptions): UseValidateReturn<ValidationData, ValidationRules> {
+  const errors = deepRef({} as UseValidateErrors<ValidationData, ValidationRules>)
 
-  const hasError = computed(() => some(errors.value, Boolean));
+  const hasError = computed(() => Object.values(errors.value).some(Boolean))
 
-  const paths = Object.keys(rules) as ValidationPaths<ValidationData, ValidationRules>[];
+  const paths = Object.keys(rules) as ValidationPaths<ValidationData, ValidationRules>[]
 
   const getValue = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
-  ): Get<ValidationData, Path> => get(toValue(data), path);
+  ): Get<ValidationData, Path> => get(toValue(data), path)
 
   const getErrorEntry = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
     ruleName: keyof ValidationRules[Path],
   ) => {
-    const rulesByPath = toValue(rules)[path];
+    const rulesByPath = toValue(rules)[path]
     if (!rulesByPath) {
-      console.warn(`No rules found for path "${path}"`);
+      console.warn(`No rules found for path "${path}"`)
 
-      return undefined;
+      return undefined
     }
 
-    const rule = rulesByPath[ruleName] as UseValidateRule<Get<ValidationData, Path>> | undefined;
+    const rule = rulesByPath[ruleName] as UseValidateRule<Get<ValidationData, Path>> | undefined
 
     if (!rule) {
-      console.warn(`No rule "${String(ruleName)}" found for path "${path}"`);
+      console.warn(`No rule "${String(ruleName)}" found for path "${path}"`)
 
-      return undefined;
+      return undefined
     }
 
-    const errorMessage = isFunction(rule.message)
+    const errorMessage = typeof rule.message === 'function'
       ? rule.message(getValue(path))
-      : rule.message;
+      : rule.message
 
     return {
       rule: ruleName,
       message: errorMessage,
-    };
-  };
+    }
+  }
 
   const {
     setWatchStopHandler: setErrorEntryWatchStopHandler,
     deleteWatchStopHandler: deleteErrorEntryWatchStopHandler,
-  } = useWatchStopHandlers();
+  } = useWatchStopHandlers()
 
   const setError = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
@@ -177,57 +172,59 @@ const useValidate = <
     const errorEntryWatchStopHandler = watch(
       () => getErrorEntry(path, ruleName),
       (errorEntry) => {
-        if (!errorEntry) return;
+        if (!errorEntry)
+          return
 
         errors.value[path] = {
           rule: errorEntry.rule,
           message: toValue(errorEntry.message),
-        };
+        }
       },
       { immediate: true, deep: true },
-    );
+    )
 
-    setErrorEntryWatchStopHandler(path, errorEntryWatchStopHandler);
-  };
+    setErrorEntryWatchStopHandler(path, errorEntryWatchStopHandler)
+  }
 
   const clearError = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
   ) => {
-    delete errors.value[path];
-    deleteErrorEntryWatchStopHandler(path);
-  };
+    delete errors.value[path]
+    deleteErrorEntryWatchStopHandler(path)
+  }
 
   const clearAllErrors = () => {
     for (const path of paths) {
-      clearError(path);
+      clearError(path)
     }
-  };
+  }
 
   const validateField = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
   ) => {
-    const value = getValue(path);
-    const rulesByPath = toValue(rules)[path] as UseValidateRulesByPath<ValidationData, Path>;
-    const ruleName = findKey(rulesByPath, (rule) => (
-      isFunction(rule.test) ? !rule.test(value) : false
-    )) as keyof ValidationRules[Path] | undefined;
+    const value = getValue(path)
+    const rulesByPath = toValue(rules)[path] as UseValidateRulesByPath<ValidationData, Path>
+    const ruleName = findKey(rulesByPath, rule => (
+      typeof rule.test === 'function' ? !rule.test(value) : false
+    )) as keyof ValidationRules[Path] | undefined
 
     if (ruleName) {
-      setError(path, ruleName);
-    } else {
-      clearError(path);
+      setError(path, ruleName)
+    }
+    else {
+      clearError(path)
     }
 
-    return !ruleName;
-  };
+    return !ruleName
+  }
 
   const validateAllFields = () => {
     for (const path of paths) {
-      validateField(path);
+      validateField(path)
     }
 
-    return !hasError.value;
-  };
+    return !hasError.value
+  }
 
   const createFieldWatcher = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
@@ -236,33 +233,33 @@ const useValidate = <
       () => getValue(path),
       () => validateField(path),
       { deep: true },
-    );
-  };
+    )
+  }
 
   const createAllFieldsWatchers = () => {
     for (const path of paths) {
-      createFieldWatcher(path);
+      createFieldWatcher(path)
     }
-  };
+  }
 
   const init = () => {
     const {
       eager = false,
       immediate = false,
-    } = options ?? {};
+    } = options ?? {}
 
     // put change tracking on all `data` fields described in `rules`
     if (eager) {
-      createAllFieldsWatchers();
+      createAllFieldsWatchers()
     }
 
     // validation of all fields from `data` described in `rules` during initialization
     if (immediate) {
-      validateAllFields();
+      validateAllFields()
     }
-  };
+  }
 
-  init();
+  init()
 
   return {
     errors: computed(() => errors.value),
@@ -272,14 +269,14 @@ const useValidate = <
     clearAllErrors,
     validateField,
     validateAllFields,
-  };
-};
+  }
+}
 
 export {
   useValidate,
   type UseValidateErrors,
-  type UseValidateRule,
-  type UseValidateRules,
   type UseValidateOptions,
   type UseValidateReturn,
-};
+  type UseValidateRule,
+  type UseValidateRules,
+}
