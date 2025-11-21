@@ -1,6 +1,6 @@
-import { toValue, type MaybeRefOrGetter } from '@vueuse/core';
-import { findKey, get, some } from 'lodash';
-import { computed, ref, watch } from 'vue-demi';
+/* eslint-disable jsdoc/require-param-type */
+import { findKey, get, isFunction, some } from 'lodash';
+import { computed, ref, toValue, watch, type ComputedRef, type MaybeRefOrGetter } from 'vue-demi';
 
 import type { UnknownRecord } from '@/shared/types';
 import { useWatchStopHandlers } from './utils';
@@ -13,11 +13,17 @@ type StringPaths<ObjectData extends Data> = Paths<ObjectData> extends string
   ? Paths<ObjectData>
   : never;
 
-type Message<Value> = ((value: Value) => string) | string;
+type Message<Value> = ((value: Value) => string) | MaybeRefOrGetter<string>;
 
 type UseValidateRule<Value> = RequireAtLeastOne<{
-  test?: (value: Value) => boolean
   message?: Message<Value>
+  /**
+   * The test function to validate the value.
+   *
+   * @param value - The value to validate
+   * @returns `true` if the value is valid, `false` otherwise
+   */
+  test?: (value: Value) => boolean
 }>;
 
 type UseValidateRulesByPath<
@@ -41,35 +47,90 @@ type UseValidateErrors<
   ValidationRules extends UseValidateRules<ValidationData> = UseValidateRules<ValidationData>,
 > = {
   [Path in ValidationPaths<ValidationData, ValidationRules>]: {
-    [RuleName in keyof ValidationRules[Path]]: ValidationRules[Path][RuleName] extends { message: Message<never> }
+    [RuleName in keyof ValidationRules[Path]]?: ValidationRules[Path][RuleName] extends { message: Message<never> }
       ? { rule: RuleName, message: string }
-      : { rule: RuleName }
-  }[keyof ValidationRules[Path]] | null
+      : { rule: RuleName, message?: undefined }
+  }[keyof ValidationRules[Path]]
 };
 
 interface UseValidateOptions {
+  /**
+   * Whether to enable reactive validation on changes of fields targeted by `rules`.
+   *
+   * @default false
+   */
   eager?: boolean
+  /**
+   * Whether to run validation during initialization.
+   *
+   * @default false
+   */
   immediate?: boolean
 }
 
-const DEFAULT_OPTIONS = {
-  eager: false,
-  immediate: false,
-} satisfies UseValidateOptions;
+interface UseValidateReturn<ValidationData extends Data, ValidationRules extends UseValidateRules<ValidationData>> {
+  /**
+   * The reactive object of validation errors.
+   * Keys are field paths defined in `rules`; values are objects with the failing rule name and message text.
+   * If no error is present, the key is not included in the object.
+   */
+  errors: ComputedRef<UseValidateErrors<ValidationData, ValidationRules>>
+  /**
+   * Whether any field currently has a validation error.
+   */
+  hasError: ComputedRef<boolean>
+  /**
+   * Manually sets an error for a specific field path and rule name.
+   *
+   * @param path - The field path to set the error for
+   * @param ruleName - The name of the rule that caused the error
+   */
+  setError: <Path extends ValidationPaths<ValidationData, ValidationRules>>(path: Path, ruleName: keyof ValidationRules[Path]) => void
+  /**
+   * Clears the error for a specific field path.
+   *
+   * @param path - The field path to clear the error
+   */
+  clearError: <Path extends ValidationPaths<ValidationData, ValidationRules>>(path: Path) => void
+  /**
+   * Clears all errors.
+   */
+  clearAllErrors: () => void
+  /**
+   * Validates a specific field path.
+   *
+   * @param path - The field path to validate
+   * @returns `true` if the field is valid, `false` otherwise
+   */
+  validateField: <Path extends ValidationPaths<ValidationData, ValidationRules>>(path: Path) => boolean
+  /**
+   * Validates all fields.
+   *
+   * @returns `true` if all fields are valid, `false` otherwise
+   */
+  validateAllFields: () => boolean
+}
 
+/**
+ * Performs reactive validation and exposes current errors and validation helpers.
+ *
+ * @param data - The source object with fields to validate
+ * @param rules - The validation rules mapped by field path. Use `satisfies` to ensure the correct type.
+ * @param options
+ */
 const useValidate = <
   ValidationData extends Data,
   ValidationRules extends UseValidateRules<ValidationData>,
 >(
   data: MaybeRefOrGetter<ValidationData>,
-  rules: MaybeRefOrGetter<ValidationRules>,
+  rules: ValidationRules,
   options?: UseValidateOptions,
-) => {
+): UseValidateReturn<ValidationData, ValidationRules> => {
   const errors = ref({} as UseValidateErrors<ValidationData, ValidationRules>);
 
   const hasError = computed(() => some(errors.value, Boolean));
 
-  const paths = computed(() => Object.keys(toValue(rules)) as ValidationPaths<ValidationData, ValidationRules>[]);
+  const paths = Object.keys(rules) as ValidationPaths<ValidationData, ValidationRules>[];
 
   const getValue = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
@@ -94,10 +155,9 @@ const useValidate = <
       return undefined;
     }
 
-    const rawMessage = rule.message;
-    const errorMessage = typeof rawMessage === 'function'
-      ? rawMessage(getValue(path))
-      : rawMessage;
+    const errorMessage = isFunction(rule.message)
+      ? rule.message(getValue(path))
+      : rule.message;
 
     return {
       rule: ruleName,
@@ -116,10 +176,15 @@ const useValidate = <
   ) => {
     const errorEntryWatchStopHandler = watch(
       () => getErrorEntry(path, ruleName),
-      (errorMessage) => {
-        errors.value[path] = errorMessage;
+      (errorEntry) => {
+        if (!errorEntry) return;
+
+        errors.value[path] = {
+          rule: errorEntry.rule,
+          message: toValue(errorEntry.message),
+        };
       },
-      { immediate: true },
+      { immediate: true, deep: true },
     );
 
     setErrorEntryWatchStopHandler(path, errorEntryWatchStopHandler);
@@ -128,12 +193,12 @@ const useValidate = <
   const clearError = <Path extends ValidationPaths<ValidationData, ValidationRules>>(
     path: Path,
   ) => {
-    errors.value[path] = null;
+    delete errors.value[path];
     deleteErrorEntryWatchStopHandler(path);
   };
 
   const clearAllErrors = () => {
-    for (const path of paths.value) {
+    for (const path of paths) {
       clearError(path);
     }
   };
@@ -144,7 +209,7 @@ const useValidate = <
     const value = getValue(path);
     const rulesByPath = toValue(rules)[path] as UseValidateRulesByPath<ValidationData, Path>;
     const ruleName = findKey(rulesByPath, (rule) => (
-      rule.test?.(value) ?? false
+      isFunction(rule.test) ? !rule.test(value) : false
     )) as keyof ValidationRules[Path] | undefined;
 
     if (ruleName) {
@@ -157,7 +222,7 @@ const useValidate = <
   };
 
   const validateAllFields = () => {
-    for (const path of paths.value) {
+    for (const path of paths) {
       validateField(path);
     }
 
@@ -175,13 +240,16 @@ const useValidate = <
   };
 
   const createAllFieldsWatchers = () => {
-    for (const path of paths.value) {
+    for (const path of paths) {
       createFieldWatcher(path);
     }
   };
 
   const init = () => {
-    const { eager, immediate } = { ...DEFAULT_OPTIONS, ...options };
+    const {
+      eager = false,
+      immediate = false,
+    } = options ?? {};
 
     // put change tracking on all `data` fields described in `rules`
     if (eager) {
@@ -191,17 +259,13 @@ const useValidate = <
     // validation of all fields from `data` described in `rules` during initialization
     if (immediate) {
       validateAllFields();
-      return;
     }
-
-    // fill in `errors` if there was no immediate validation
-    clearAllErrors();
   };
 
   init();
 
   return {
-    errors: computed(() => errors.value as UseValidateErrors<ValidationData, ValidationRules>),
+    errors: computed(() => errors.value),
     hasError,
     setError,
     clearError,
@@ -217,4 +281,5 @@ export {
   type UseValidateRule,
   type UseValidateRules,
   type UseValidateOptions,
+  type UseValidateReturn,
 };
